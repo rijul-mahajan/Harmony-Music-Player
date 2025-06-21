@@ -1,0 +1,25 @@
+# Compiled class files
+*.class
+
+# Build directories
+build/
+out/
+
+# Compiled JAR files
+*.jar
+
+# Executables
+*.exe
+
+# IDE-specific files
+.vscode/
+
+# Log files
+*.log
+log/
+
+# Manifest files
+MANIFEST.MF
+
+# Icon files
+icon.ico
