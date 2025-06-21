@@ -91,12 +91,13 @@ public class DatabaseManager {
     }
 
     /**
-     * Loads all songs from the database.
+     * Enhanced version of loadPlaylist that filters out invalid files automatically
      * 
-     * @return A list of Song objects.
+     * @return A list of valid Song objects only
      */
-    public List<Song> loadPlaylist() {
+    public List<Song> loadValidPlaylist() {
         List<Song> playlist = new ArrayList<>();
+        List<String> invalidPaths = new ArrayList<>();
         String sql = "SELECT title, artist, album, file_path FROM Songs ORDER BY title ASC";
 
         try (Connection conn = connect();
@@ -104,15 +105,38 @@ public class DatabaseManager {
                 ResultSet rs = stmt.executeQuery(sql)) {
 
             while (rs.next()) {
-                Song song = new Song(
-                        rs.getString("title"),
-                        rs.getString("artist"),
-                        rs.getString("album"),
-                        rs.getString("file_path"));
-                playlist.add(song);
+                String filePath = rs.getString("file_path");
+                File file = new File(filePath);
+
+                if (file.exists() && file.canRead()) {
+                    Song song = new Song(
+                            rs.getString("title"),
+                            rs.getString("artist"),
+                            rs.getString("album"),
+                            filePath);
+                    playlist.add(song);
+                } else {
+                    invalidPaths.add(filePath);
+                    System.out.println("Found invalid file path, will be removed: " + filePath);
+                }
             }
 
-            System.out.println("Loaded " + playlist.size() + " songs from database.");
+            // Remove invalid paths from database
+            if (!invalidPaths.isEmpty()) {
+                String deleteSql = "DELETE FROM Songs WHERE file_path = ?";
+                try (PreparedStatement pstmt = conn.prepareStatement(deleteSql)) {
+                    conn.setAutoCommit(false);
+                    for (String invalidPath : invalidPaths) {
+                        pstmt.setString(1, invalidPath);
+                        pstmt.executeUpdate();
+                    }
+                    conn.commit();
+                    System.out.println(
+                            "Automatically removed " + invalidPaths.size() + " invalid entries from database.");
+                }
+            }
+
+            System.out.println("Loaded " + playlist.size() + " valid songs from database.");
 
         } catch (SQLException e) {
             System.err.println("Error loading playlist from database: " + e.getMessage());
@@ -173,5 +197,73 @@ public class DatabaseManager {
             e.printStackTrace();
         }
         return songsAddedCount;
+    }
+
+    /**
+     * Validates all songs in the database and removes entries for files that no
+     * longer exist.
+     * 
+     * @return The number of invalid entries removed
+     */
+    public int cleanupInvalidSongs() {
+        List<Song> allSongs = loadValidPlaylist();
+        int removedCount = 0;
+        String deleteSql = "DELETE FROM Songs WHERE file_path = ?";
+
+        try (Connection conn = connect();
+                PreparedStatement pstmt = conn.prepareStatement(deleteSql)) {
+
+            conn.setAutoCommit(false);
+
+            for (Song song : allSongs) {
+                File file = new File(song.getFilePath());
+                if (!file.exists() || !file.canRead()) {
+                    try {
+                        pstmt.setString(1, song.getFilePath());
+                        pstmt.executeUpdate();
+                        removedCount++;
+                        System.out.println("Removed invalid song from database: " + song.getTitle());
+                    } catch (SQLException e) {
+                        System.err.println("Error removing invalid song: " + e.getMessage());
+                    }
+                }
+            }
+
+            conn.commit();
+            System.out.println("Database cleanup completed. Removed " + removedCount + " invalid entries.");
+
+        } catch (SQLException e) {
+            System.err.println("Error during database cleanup: " + e.getMessage());
+            e.printStackTrace();
+        }
+
+        return removedCount;
+    }
+
+    /**
+     * Checks if a file path exists in the database and is still valid
+     * 
+     * @param filePath The file path to check
+     * @return true if the file exists both in database and filesystem
+     */
+    public boolean isValidSongPath(String filePath) {
+        String sql = "SELECT COUNT(*) FROM Songs WHERE file_path = ?";
+
+        try (Connection conn = connect();
+                PreparedStatement pstmt = conn.prepareStatement(sql)) {
+
+            pstmt.setString(1, filePath);
+            ResultSet rs = pstmt.executeQuery();
+
+            if (rs.next() && rs.getInt(1) > 0) {
+                File file = new File(filePath);
+                return file.exists() && file.canRead();
+            }
+
+        } catch (SQLException e) {
+            System.err.println("Error checking song path validity: " + e.getMessage());
+        }
+
+        return false;
     }
 }

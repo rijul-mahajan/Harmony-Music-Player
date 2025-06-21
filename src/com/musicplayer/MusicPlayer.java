@@ -144,7 +144,7 @@ public class MusicPlayer extends JFrame {
         addWindowListener(new WindowAdapter() {
             @Override
             public void windowClosing(WindowEvent e) {
-                cleanup();
+                performCleanShutdown();
                 System.exit(0);
             }
         });
@@ -226,18 +226,21 @@ public class MusicPlayer extends JFrame {
         return uploadButton;
     }
 
-    // Replace refreshPlaylistFromDatabase() method
     private void refreshPlaylistFromDatabase() {
         SwingWorker<List<Song>, Void> worker = new SwingWorker<List<Song>, Void>() {
             @Override
             protected List<Song> doInBackground() throws Exception {
-                return databaseManager.loadPlaylist();
+                // Use the new method that automatically cleans up invalid entries
+                return databaseManager.loadValidPlaylist();
             }
 
             @Override
             protected void done() {
                 try {
                     List<Song> songsFromDB = get();
+                    int previousSize = playlist.size();
+                    int previousIndex = currentSongIndex;
+
                     playlist.clear();
                     playlistModel.clear();
                     playlist.addAll(songsFromDB);
@@ -246,17 +249,88 @@ public class MusicPlayer extends JFrame {
                         playlistModel.addElement(song);
                     }
 
+                    // Handle playlist changes intelligently
                     if (!playlist.isEmpty() && playlistView != null) {
-                        if (currentSongIndex >= playlist.size() || currentSongIndex < 0) {
-                            currentSongIndex = 0;
+                        // If playlist size changed, validate current index
+                        if (playlist.size() != previousSize) {
+                            if (previousIndex >= playlist.size()) {
+                                currentSongIndex = 0;
+                            } else if (previousIndex < 0) {
+                                currentSongIndex = 0;
+                            } else {
+                                // Try to maintain current song if possible
+                                currentSongIndex = previousIndex;
+                            }
+
+                            // If the current song file no longer exists, reset to first song
+                            if (currentSongIndex < playlist.size()) {
+                                Song currentSong = playlist.get(currentSongIndex);
+                                File currentFile = new File(currentSong.getFilePath());
+                                if (!currentFile.exists()) {
+                                    currentSongIndex = 0;
+                                    isPlaying = false;
+                                    playPauseButton.setText("▶");
+                                    loadCurrentSong();
+                                }
+                            }
                         }
+
                         playlistView.setSelectedIndex(currentSongIndex);
                     } else if (playlist.isEmpty() && playlistView != null) {
                         currentSongIndex = -1;
+                        isPlaying = false;
+                        playPauseButton.setText("▶");
                         updateUIForEmptyPlaylist();
                     }
+
+                    // Update shuffle order if shuffling is enabled
+                    if (isShuffling && !playlist.isEmpty()) {
+                        rebuildShuffleOrder();
+                    }
+
                 } catch (Exception e) {
                     System.err.println("Error loading playlist: " + e.getMessage());
+                    e.printStackTrace();
+                }
+            }
+        };
+        worker.execute();
+    }
+
+    private void refreshPlaylist() {
+        // Show loading indicator
+        titleLabel.setText("Refreshing playlist...");
+        artistLabel.setText("Please wait");
+
+        SwingWorker<Integer, Void> worker = new SwingWorker<Integer, Void>() {
+            @Override
+            protected Integer doInBackground() throws Exception {
+                // Clean up invalid entries and get count
+                return databaseManager.cleanupInvalidSongs();
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    int removedCount = get();
+
+                    // Refresh the playlist
+                    refreshPlaylistFromDatabase();
+
+                    // Show notification if songs were removed
+                    if (removedCount > 0) {
+                        JOptionPane.showMessageDialog(MusicPlayer.this,
+                                "Removed " + removedCount + " song(s) that no longer exist on disk.",
+                                "Playlist Cleaned",
+                                JOptionPane.INFORMATION_MESSAGE);
+                    }
+
+                } catch (Exception e) {
+                    System.err.println("Error during playlist refresh: " + e.getMessage());
+                    JOptionPane.showMessageDialog(MusicPlayer.this,
+                            "Error refreshing playlist: " + e.getMessage(),
+                            "Refresh Error",
+                            JOptionPane.ERROR_MESSAGE);
                 }
             }
         };
@@ -363,26 +437,51 @@ public class MusicPlayer extends JFrame {
         setContentPane(mainPanel);
     }
 
+    // Replace the setupSidebarPanel() method with this updated version:
+
     private void setupSidebarPanel() {
         sidebarPanel = new JPanel();
         sidebarPanel.setLayout(new BorderLayout(0, 0));
         sidebarPanel.setBackground(BACKGROUND_COLOR);
         sidebarPanel.setBorder(new EmptyBorder(10, 10, 10, 10));
-        sidebarPanel.setPreferredSize(new Dimension(250, getHeight()));
+        sidebarPanel.setPreferredSize(new Dimension(275, getHeight()));
 
-        // Playlist title and add button panel
-        JPanel titlePanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0));
+        // Playlist title and buttons panel
+        JPanel titlePanel = new JPanel(new BorderLayout(0, 0));
         titlePanel.setBackground(BACKGROUND_COLOR);
         titlePanel.setBorder(new EmptyBorder(0, 0, 10, 0));
+
+        // Left side components (label and upload button)
+        JPanel leftPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        leftPanel.setBackground(BACKGROUND_COLOR);
 
         JLabel playlistLabel = new JLabel("Playlist");
         playlistLabel.setFont(new Font("Inter", Font.BOLD, 18));
         playlistLabel.setForeground(TEXT_COLOR);
-
+        playlistLabel.setBorder(new EmptyBorder(0, 0, 0, 20));
         CustomButton uploadButton = createUploadButton();
 
-        titlePanel.add(playlistLabel);
-        titlePanel.add(uploadButton);
+        leftPanel.add(playlistLabel);
+        leftPanel.add(uploadButton);
+
+        // Right side component (refresh button)
+        JPanel rightPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 0, 0));
+        rightPanel.setBackground(BACKGROUND_COLOR);
+        rightPanel.setBorder(new EmptyBorder(0, 0, 0, 0));
+
+        CustomButton refreshButton = new CustomButton("🔄");
+        refreshButton.setToolTipText("Refresh Playlist");
+        refreshButton.setFont(new Font("Segoe UI Symbol", Font.PLAIN, 12));
+        refreshButton.setForeground(TEXT_COLOR);
+        refreshButton.setPreferredSize(new Dimension(45, 30));
+        refreshButton.setCursor(new Cursor(Cursor.HAND_CURSOR));
+        refreshButton.addActionListener(_ -> refreshPlaylist());
+
+        rightPanel.add(refreshButton);
+
+        // Add both panels to titlePanel
+        titlePanel.add(leftPanel, BorderLayout.WEST);
+        titlePanel.add(rightPanel, BorderLayout.EAST);
 
         // Playlist view
         playlistView = new JList<>(playlistModel);
@@ -910,22 +1009,46 @@ public class MusicPlayer extends JFrame {
             return; // No songs to play
         }
 
-        if (isLooping) {
-            loadCurrentSong();
-        } else if (isShuffling) {
-            // Validate shuffleOrder
-            if (shuffleOrder.isEmpty() || shuffleOrder.size() != playlist.size()
-                    || !shuffleOrder.contains(currentSongIndex)) {
-                rebuildShuffleOrder();
+        int originalIndex = currentSongIndex;
+        int attempts = 0;
+
+        do {
+            if (isLooping) {
+                // Stay on current song for loop mode
+                break;
+            } else if (isShuffling) {
+                // Validate shuffleOrder
+                if (shuffleOrder.isEmpty() || shuffleOrder.size() != playlist.size()
+                        || !shuffleOrder.contains(currentSongIndex)) {
+                    rebuildShuffleOrder();
+                }
+                int currentShuffleIndex = shuffleOrder.indexOf(currentSongIndex);
+                int nextShuffleIndex = (currentShuffleIndex + 1) % shuffleOrder.size();
+                currentSongIndex = shuffleOrder.get(nextShuffleIndex);
+            } else {
+                currentSongIndex = (currentSongIndex + 1) % playlist.size();
             }
-            int currentShuffleIndex = shuffleOrder.indexOf(currentSongIndex);
-            int nextShuffleIndex = (currentShuffleIndex + 1) % shuffleOrder.size();
-            currentSongIndex = shuffleOrder.get(nextShuffleIndex);
-            loadCurrentSong();
-        } else {
-            currentSongIndex = (currentSongIndex + 1) % playlist.size();
-            loadCurrentSong();
+
+            // Check if the selected song file exists
+            if (currentSongIndex < playlist.size()) {
+                Song song = playlist.get(currentSongIndex);
+                File songFile = new File(song.getFilePath());
+
+                if (songFile.exists() && songFile.canRead()) {
+                    break; // Found a valid song
+                }
+            }
+
+            attempts++;
+        } while (attempts < playlist.size() && currentSongIndex != originalIndex);
+
+        // If we couldn't find any valid songs, refresh the playlist
+        if (attempts >= playlist.size()) {
+            refreshPlaylist();
+            return;
         }
+
+        loadCurrentSong();
 
         // Autoplay the next song
         isPlaying = true;
@@ -1007,7 +1130,37 @@ public class MusicPlayer extends JFrame {
             return;
         }
 
+        if (currentSongIndex >= playlist.size() || currentSongIndex < 0) {
+            currentSongIndex = 0;
+        }
+
         Song song = playlist.get(currentSongIndex);
+
+        // Check if the file still exists before attempting to load
+        File songFile = new File(song.getFilePath());
+        if (!songFile.exists() || !songFile.canRead()) {
+            System.err.println("Song file no longer exists: " + song.getFilePath());
+
+            // Remove this song from database and refresh playlist
+            SwingWorker<Void, Void> cleanupWorker = new SwingWorker<Void, Void>() {
+                @Override
+                protected Void doInBackground() throws Exception {
+                    databaseManager.cleanupInvalidSongs();
+                    return null;
+                }
+
+                @Override
+                protected void done() {
+                    refreshPlaylistFromDatabase();
+                    JOptionPane.showMessageDialog(MusicPlayer.this,
+                            "Song file no longer exists and has been removed from playlist:\n" + song.getTitle(),
+                            "File Not Found",
+                            JOptionPane.WARNING_MESSAGE);
+                }
+            };
+            cleanupWorker.execute();
+            return;
+        }
 
         // Update UI immediately for responsiveness
         titleLabel.setText(song.getTitle());
@@ -1049,6 +1202,7 @@ public class MusicPlayer extends JFrame {
                                             JOptionPane.ERROR_MESSAGE);
                                     System.err.println("Playback error: " + e.getMessage());
                                     isPlaying = false;
+                                    playPauseButton.setText("▶");
                                 }
                             }
                         } else {
@@ -1059,10 +1213,17 @@ public class MusicPlayer extends JFrame {
                     SwingUtilities.invokeLater(() -> {
                         JOptionPane.showMessageDialog(MusicPlayer.this,
                                 "Could not load the audio file: " + song.getFilePath() +
-                                        "\nError: " + e.getMessage(),
+                                        "\nError: " + e.getMessage() +
+                                        "\nThe file may be corrupted or in an unsupported format.",
                                 "Error Loading Audio",
                                 JOptionPane.ERROR_MESSAGE);
-                        updateUIForEmptyPlaylist();
+
+                        // Try to skip to next song if current one fails
+                        if (playlist.size() > 1) {
+                            nextSong();
+                        } else {
+                            updateUIForEmptyPlaylist();
+                        }
                     });
                     System.err.println("Failed to load audio file: " + song.getFilePath() + " - " + e.getMessage());
                 }
@@ -1086,5 +1247,33 @@ public class MusicPlayer extends JFrame {
                 new MusicPlayer();
             }
         });
+    }
+
+    private void performCleanShutdown() {
+        try {
+            // Stop the progress timer
+            if (progressTimer != null) {
+                progressTimer.stop();
+            }
+
+            // Stop audio playback
+            if (audioPlayer != null) {
+                audioPlayer.pause();
+                audioPlayer.reset();
+                audioPlayer.dispose();
+            }
+
+            // Clean up database connections
+            if (databaseManager != null) {
+                // Perform final cleanup of invalid songs
+                databaseManager.cleanupInvalidSongs();
+            }
+
+            System.out.println("Application shutdown completed successfully.");
+
+        } catch (Exception e) {
+            System.err.println("Error during application shutdown: " + e.getMessage());
+            e.printStackTrace();
+        }
     }
 }
