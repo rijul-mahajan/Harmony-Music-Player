@@ -23,3 +23,6 @@ MANIFEST.MF
 
 # Icon files
 icon.ico
+
+# Build script
+build.ps1
